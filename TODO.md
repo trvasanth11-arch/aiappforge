@@ -42,8 +42,8 @@
 
 ## Full completion phases
 
-- [ ] AI generates a real file tree for each project, including page components, routes, schema and API contract, and stores each file with a version.
-- [ ] Project workspace includes a file explorer, source viewer, generated-file regeneration, version history, restore and rollback.
+- [x] AI generates a real file tree for each project, including page components, routes, schema and API contract, and stores each file with a version.
+- [x] Project workspace includes a file explorer, source viewer, generated-file regeneration, version history, restore and rollback.
 - [ ] Preview compiles the generated project contract and renders its actual generated pages/data map; runtime logs are attached to a project version.
 - [ ] Bug Fix AI reads selected project files and error logs, proposes a reviewable diff, applies the patch, records a repair event, and supports rollback.
 - [ ] Publishing uses a provider adapter boundary with build logs, environment variables, deployment status, public URL and rollback; missing provider configuration remains explicit.

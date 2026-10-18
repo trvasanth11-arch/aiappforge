@@ -100,6 +100,14 @@ export const appRouter = router({
       await updateProject(input.projectId, ctx.user.id, { status: "ready" });
       return { versionId, files };
     }),
+    saveFile: protectedProcedure.input(z.object({ projectId: z.number(), path: z.string().min(1).max(255), kind: z.string().min(1).max(32), content: z.string().max(200000) })).mutation(async ({ ctx, input }) => {
+      const project = await getProject(input.projectId, ctx.user.id);
+      if (!project) throw new Error("Project not found");
+      const fileId = await upsertProjectFile({ projectId: input.projectId, ownerId: ctx.user.id, path: input.path, kind: input.kind, content: input.content, version: 1 });
+      const versionId = await insertProjectVersion({ projectId: input.projectId, ownerId: ctx.user.id, label: `Edited ${input.path}`, summary: `Saved changes to ${input.path}.` });
+      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "source-edit", message: `Saved ${input.path}`, meta: JSON.stringify({ fileId, versionId, path: input.path }) });
+      return { fileId, versionId };
+    }),
     generate: protectedProcedure.input(z.object({ idea: z.string().min(12), name: z.string().min(2).max(80) })).mutation(async ({ ctx, input }) => {
       const projectId = await insertProject({ ownerId: ctx.user.id, name: input.name, idea: input.idea, status: "building" });
       await insertEvent({ projectId, ownerId: ctx.user.id, kind: "generation", message: "AI blueprint generation started" });
