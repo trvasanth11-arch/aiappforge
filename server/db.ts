@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -87,7 +87,7 @@ export async function insertProject(input: typeof projects.$inferInsert) {
 export async function updateProject(projectId: number, ownerId: number, values: Partial<typeof projects.$inferInsert>) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
-  await db.update(projects).set(values).where(eq(projects.id, projectId));
+  await db.update(projects).set(values).where(and(eq(projects.id, projectId), eq(projects.ownerId, ownerId)));
   return getProject(projectId, ownerId);
 }
 
@@ -130,4 +130,10 @@ export async function insertBugReport(input: typeof bugReports.$inferInsert) {
   if (!db) throw new Error("Database is not available");
   const result = await db.insert(bugReports).values(input);
   return Number(result[0].insertId);
+}
+
+export async function updateBugReport(id: number, ownerId: number, values: Partial<typeof bugReports.$inferInsert>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  await db.update(bugReports).set(values).where(and(eq(bugReports.id, id), eq(bugReports.ownerId, ownerId)));
 }

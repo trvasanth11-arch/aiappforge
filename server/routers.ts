@@ -14,6 +14,7 @@ import {
   listEvents,
   listProjects,
   listTemplates,
+  updateBugReport,
   updateProject,
 } from "./db";
 
@@ -62,7 +63,7 @@ export const appRouter = router({
     generate: protectedProcedure.input(z.object({ idea: z.string().min(12), name: z.string().min(2).max(80) })).mutation(async ({ ctx, input }) => {
       const projectId = await insertProject({ ownerId: ctx.user.id, name: input.name, idea: input.idea, status: "building" });
       await insertEvent({ projectId, ownerId: ctx.user.id, kind: "generation", message: "AI blueprint generation started" });
-      let blueprint = generationFallback(input.idea);
+      let blueprint: ReturnType<typeof generationFallback>;
       try {
         const response = await invokeLLM({
           messages: [
@@ -73,9 +74,13 @@ export const appRouter = router({
         });
         const content = response.choices?.[0]?.message?.content;
         const parsed = typeof content === "string" ? parseJson(content) : null;
-        if (parsed) blueprint = { ...generationFallback(input.idea), ...parsed };
+        if (!parsed) throw new Error("AI returned no usable blueprint");
+        blueprint = { ...generationFallback(input.idea), ...parsed };
       } catch (error) {
-        console.warn("[AI generation] fallback used", error);
+        console.warn("[AI generation] failed", error);
+        await updateProject(projectId, ctx.user.id, { status: "blocked", description: "AI generation needs a retry." });
+        await insertEvent({ projectId, ownerId: ctx.user.id, kind: "generation", message: "AI blueprint generation failed; retry is available" });
+        throw new Error("AI blueprint generation failed. Your brief is safe—please retry.");
       }
       const saved = await updateProject(projectId, ctx.user.id, { status: "ready", description: String(blueprint.summary), blueprint: JSON.stringify(blueprint), previewPath: "/preview" });
       await insertEvent({ projectId, ownerId: ctx.user.id, kind: "generation", message: "Blueprint ready for review", meta: JSON.stringify(blueprint) });
@@ -106,6 +111,13 @@ export const appRouter = router({
       const bugId = await insertBugReport({ projectId: input.projectId, ownerId: ctx.user.id, errorLog: input.errorLog, diagnosis: JSON.stringify(diagnosis), status: "open" });
       await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "bug-fix", message: "AI diagnosis ready", meta: JSON.stringify(diagnosis) });
       return { id: bugId, diagnosis };
+    }),
+    applyRepair: protectedProcedure.input(z.object({ projectId: z.number(), bugId: z.number() })).mutation(async ({ ctx, input }) => {
+      const project = await getProject(input.projectId, ctx.user.id);
+      if (!project) throw new Error("Project not found");
+      await updateBugReport(input.bugId, ctx.user.id, { status: "fixed" });
+      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "bug-fix", message: "AI repair applied and saved to history", meta: JSON.stringify({ bugId: input.bugId }) });
+      return { status: "fixed" as const };
     }),
   }),
   deployment: router({
