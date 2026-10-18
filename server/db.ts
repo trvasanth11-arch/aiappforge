@@ -10,6 +10,8 @@ import {
   domains,
   builds,
   bugReports,
+  projectFiles,
+  projectVersions,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -136,4 +138,39 @@ export async function updateBugReport(id: number, ownerId: number, values: Parti
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   await db.update(bugReports).set(values).where(and(eq(bugReports.id, id), eq(bugReports.ownerId, ownerId)));
+}
+
+export async function insertProjectVersion(input: typeof projectVersions.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const result = await db.insert(projectVersions).values(input);
+  return Number(result[0].insertId);
+}
+
+export async function listProjectVersions(projectId: number, ownerId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const project = await getProject(projectId, ownerId);
+  if (!project) return [];
+  return db.select().from(projectVersions).where(and(eq(projectVersions.projectId, projectId), eq(projectVersions.ownerId, ownerId))).orderBy(desc(projectVersions.createdAt));
+}
+
+export async function upsertProjectFile(input: typeof projectFiles.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const existing = await db.select().from(projectFiles).where(and(eq(projectFiles.projectId, input.projectId), eq(projectFiles.ownerId, input.ownerId), eq(projectFiles.path, input.path))).limit(1);
+  if (existing[0]) {
+    await db.update(projectFiles).set({ content: input.content, kind: input.kind, version: (existing[0].version ?? 0) + 1 }).where(eq(projectFiles.id, existing[0].id));
+    return existing[0].id;
+  }
+  const result = await db.insert(projectFiles).values(input);
+  return Number(result[0].insertId);
+}
+
+export async function listProjectFiles(projectId: number, ownerId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const project = await getProject(projectId, ownerId);
+  if (!project) return [];
+  return db.select().from(projectFiles).where(and(eq(projectFiles.projectId, projectId), eq(projectFiles.ownerId, ownerId))).orderBy(projectFiles.path);
 }

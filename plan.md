@@ -65,3 +65,8 @@ Publish, custom-domain verification மற்றும் Android packaging-ன�
 ## Required behavior and boundaries
 
 The app must require real Manus OAuth for protected dashboard data, use secure session behavior from the starter, preserve authentication boundaries, and never claim that an unconfigured publish/domain/APK provider completed successfully. AI failures must retain the input and provide retry. Database writes must be user-scoped. The first deliverable is the MVP control center; provider-specific deploy workers, DNS APIs and Android signing credentials can be connected later without redesigning the product surfaces.
+
+
+## Full-completion roadmap
+
+The approved MVP is now extended toward a complete builder in these implementation phases: (1) AI-generated project files and versioned file storage; (2) project file explorer and executable preview contract; (3) source-aware Bug Fix AI with diff/apply/rollback; (4) deployment adapter interface with build logs and real publish handoff; (5) custom-domain verification adapter; (6) Android wrapper/build adapter with signing-safe artifact handling; and (7) team permissions, usage controls, audit history and production hardening. External provider credentials and signing material will remain protected configuration inputs, never hardcoded into source.

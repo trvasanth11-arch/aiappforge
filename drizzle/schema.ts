@@ -82,6 +82,27 @@ export const bugReports = mysqlTable("bugReports", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+export const projectFiles = mysqlTable("projectFiles", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  ownerId: int("ownerId").notNull(),
+  path: varchar("path", { length: 255 }).notNull(),
+  content: text("content").notNull(),
+  kind: varchar("kind", { length: 32 }).default("source").notNull(),
+  version: int("version").default(1).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const projectVersions = mysqlTable("projectVersions", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  ownerId: int("ownerId").notNull(),
+  label: varchar("label", { length: 160 }).notNull(),
+  summary: text("summary").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type Project = typeof projects.$inferSelect;
@@ -89,3 +110,5 @@ export type Template = typeof templates.$inferSelect;
 export type Domain = typeof domains.$inferSelect;
 export type Build = typeof builds.$inferSelect;
 export type BugReport = typeof bugReports.$inferSelect;
+export type ProjectFile = typeof projectFiles.$inferSelect;
+export type ProjectVersion = typeof projectVersions.$inferSelect;

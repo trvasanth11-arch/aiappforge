@@ -38,3 +38,15 @@
 - [x] Manus OAuth remains the real protected login flow; session cookie behavior remains Preview-safe.
 - [x] Drizzle schema and additive migration cover projects, project events, templates, domains, builds, and bug reports.
 - [x] `/manus-routes.json` describes all product pages, TypeScript diagnostics are registered, and the app passes typecheck/build checks.
+
+
+## Full completion phases
+
+- [ ] AI generates a real file tree for each project, including page components, routes, schema and API contract, and stores each file with a version.
+- [ ] Project workspace includes a file explorer, source viewer, generated-file regeneration, version history, restore and rollback.
+- [ ] Preview compiles the generated project contract and renders its actual generated pages/data map; runtime logs are attached to a project version.
+- [ ] Bug Fix AI reads selected project files and error logs, proposes a reviewable diff, applies the patch, records a repair event, and supports rollback.
+- [ ] Publishing uses a provider adapter boundary with build logs, environment variables, deployment status, public URL and rollback; missing provider configuration remains explicit.
+- [ ] Domain setup uses a provider adapter boundary with DNS challenge, verification polling, SSL state and removal/update actions.
+- [ ] Android builds use an isolated wrapper/build adapter with APK/AAB artifacts, build logs, package validation and protected signing configuration.
+- [ ] Team roles, project permissions, usage limits, audit logs and production rate limits are implemented.
