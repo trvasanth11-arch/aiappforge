@@ -208,8 +208,14 @@ export const appRouter = router({
       }
       const saved = await updateProject(projectId, ctx.user.id, { status: "ready", description: String(blueprint.summary), blueprint: JSON.stringify(blueprint), previewPath: "/preview" });
       await insertEvent({ projectId, ownerId: ctx.user.id, kind: "generation", message: "Blueprint ready for review", meta: JSON.stringify(blueprint) });
+      const generatedFiles = fileFallback(input.name, blueprint);
+      const sourceVersionId = await insertProjectVersion({ projectId, ownerId: ctx.user.id, label: "Initial generated source", summary: `${generatedFiles.length} starter files generated from the conversation.`, snapshot: JSON.stringify(generatedFiles) });
+      for (const file of generatedFiles) await upsertProjectFile({ projectId, ownerId: ctx.user.id, path: file.path, kind: file.kind, content: file.content, version: 1 });
+      const routeMap = JSON.stringify(blueprint.pages.map(page => ({ path: `/${page.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, title: page })));
+      await insertPreviewRun({ projectId, ownerId: ctx.user.id, versionId: sourceVersionId, status: "ready", logs: `[forge] conversation brief accepted\n[forge] generated ${generatedFiles.length} source files\n[forge] initial preview contract ready`, routeMap });
+      await insertEvent({ projectId, ownerId: ctx.user.id, kind: "source-generation", message: `Automatically generated ${generatedFiles.length} starter files`, meta: JSON.stringify({ versionId: sourceVersionId, paths: generatedFiles.map(file => file.path) }) });
       await insertAudit({ projectId, actorId: ctx.user.id, action: "blueprint.generate", metadata: JSON.stringify({ projectId }) });
-      return { project: saved, blueprint, remaining: usage.remaining };
+      return { project: saved, blueprint, sourceVersionId, filesGenerated: generatedFiles.length, remaining: usage.remaining };
     }),
     fromTemplate: protectedProcedure.input(z.object({ slug: z.string(), name: z.string().min(2) })).mutation(async ({ ctx, input }) => {
       const template = templateCatalog.find(item => item.slug === input.slug) ?? templateCatalog[0];
