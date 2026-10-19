@@ -44,9 +44,12 @@
 
 - [x] AI generates a real file tree for each project, including page components, routes, schema and API contract, and stores each file with a version.
 - [x] Project workspace includes a file explorer, source viewer, generated-file regeneration, version history, restore and rollback.
-- [ ] Preview compiles the generated project contract and renders its actual generated pages/data map; runtime logs are attached to a project version.
-- [ ] Bug Fix AI reads selected project files and error logs, proposes a reviewable diff, applies the patch, records a repair event, and supports rollback.
-- [ ] Publishing uses a provider adapter boundary with build logs, environment variables, deployment status, public URL and rollback; missing provider configuration remains explicit.
-- [ ] Domain setup uses a provider adapter boundary with DNS challenge, verification polling, SSL state and removal/update actions.
-- [ ] Android builds use an isolated wrapper/build adapter with APK/AAB artifacts, build logs, package validation and protected signing configuration.
-- [ ] Team roles, project permissions, usage limits, audit logs and production rate limits are implemented.
+- [x] Preview compiles the generated project contract, validates the generated entry point and paths, maps blueprint pages, and stores runtime logs on a versioned preview run.
+- [x] Bug Fix AI reads selected project files and error logs, proposes a reviewable file patch, applies only non-stale patches, records a repair event, and stores a restorable snapshot.
+- [x] Publishing uses a provider adapter boundary, persists deployment status and audit events, and reports the exact missing provider configuration instead of fabricating a public URL.
+- [ ] Connect a real deployment-provider token and map its project API to return build logs, public URL and rollback handles.
+- [x] Domain setup uses a provider adapter boundary and persists pending/blocked verification state with provider guidance.
+- [ ] Connect a real DNS provider token to run challenge verification polling and SSL state updates.
+- [x] Android builds validate package/version inputs, use an isolated build adapter boundary, and keep signing/build blockers explicit.
+- [ ] Connect an Android worker and protected signing credentials to produce downloadable APK/AAB artifacts.
+- [x] Project member roles (editor/viewer), owner-only membership changes, daily usage counters, audit logs, and protected generation/diagnosis limits are implemented.

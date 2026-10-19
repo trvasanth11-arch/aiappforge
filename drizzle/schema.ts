@@ -77,6 +77,8 @@ export const bugReports = mysqlTable("bugReports", {
   ownerId: int("ownerId").notNull(),
   errorLog: text("errorLog").notNull(),
   diagnosis: text("diagnosis"),
+  patch: text("patch"),
+  affectedFiles: text("affectedFiles"),
   status: mysqlEnum("status", ["open", "analyzing", "fixed", "blocked"]).default("open").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -100,7 +102,46 @@ export const projectVersions = mysqlTable("projectVersions", {
   ownerId: int("ownerId").notNull(),
   label: varchar("label", { length: 160 }).notNull(),
   summary: text("summary").notNull(),
+  snapshot: text("snapshot"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const previewRuns = mysqlTable("previewRuns", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  ownerId: int("ownerId").notNull(),
+  versionId: int("versionId"),
+  status: mysqlEnum("status", ["queued", "building", "ready", "failed"]).default("queued").notNull(),
+  logs: text("logs").notNull(),
+  routeMap: text("routeMap"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const projectMembers = mysqlTable("projectMembers", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  userId: int("userId").notNull(),
+  role: mysqlEnum("role", ["owner", "editor", "viewer"]).default("viewer").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const auditLogs = mysqlTable("auditLogs", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId"),
+  actorId: int("actorId").notNull(),
+  action: varchar("action", { length: 96 }).notNull(),
+  metadata: text("metadata"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const usageCounters = mysqlTable("usageCounters", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  key: varchar("key", { length: 64 }).notNull(),
+  count: int("count").default(0).notNull(),
+  periodStart: timestamp("periodStart").notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
 export type User = typeof users.$inferSelect;
@@ -112,3 +153,7 @@ export type Build = typeof builds.$inferSelect;
 export type BugReport = typeof bugReports.$inferSelect;
 export type ProjectFile = typeof projectFiles.$inferSelect;
 export type ProjectVersion = typeof projectVersions.$inferSelect;
+export type PreviewRun = typeof previewRuns.$inferSelect;
+export type ProjectMember = typeof projectMembers.$inferSelect;
+export type AuditLog = typeof auditLogs.$inferSelect;
+export type UsageCounter = typeof usageCounters.$inferSelect;

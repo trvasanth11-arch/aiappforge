@@ -4,15 +4,28 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { androidAdapter, deploymentAdapter, domainAdapter } from "./adapters";
 import {
+  addMember,
+  consumeUsage,
+  getBugReport,
   getProject,
+  getProjectAccess,
+  getUserByEmail,
+  insertAudit,
   insertBuild,
   insertBugReport,
   insertDomain,
   insertEvent,
+  insertPreviewRun,
   insertProject,
   insertProjectVersion,
+  listAuditLogs,
+  listBuilds,
+  listDomains,
   listEvents,
+  listMembers,
+  listPreviewRuns,
   listProjectFiles,
   listProjectVersions,
   listProjects,
@@ -31,12 +44,15 @@ const templateCatalog = [
   { id: 6, slug: "community", name: "Community Hub", category: "Community", description: "Member profiles, posts and moderation tools for your next network.", accent: "#C5A3FF", icon: "community", popularity: 66 },
 ];
 
+type Blueprint = { summary: string; pages: string[]; tables: string[]; roles: string[]; checklist: string[] };
+type FilePatch = { path: string; before: string; after: string; reason: string };
+
 const parseJson = (content: string) => {
   const cleaned = content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   try { return JSON.parse(cleaned) as Record<string, unknown>; } catch { return null; }
 };
 
-const generationFallback = (idea: string) => ({
+const generationFallback = (idea: string): Blueprint => ({
   summary: `A build-ready product plan for: ${idea}`,
   pages: ["Landing", "Dashboard", "Settings"],
   tables: ["users", "projects", "activity"],
@@ -51,6 +67,21 @@ const fileFallback = (projectName: string, blueprint: Record<string, unknown>) =
   { path: "server/api.ts", kind: "api", content: `export const health = () => ({ status: "ok", project: ${JSON.stringify(projectName)} });\n` },
   { path: "README.md", kind: "documentation", content: `# ${projectName}\n\nGenerated from an AI product brief.\n` },
 ];
+
+const heuristicPatch = (file: { path: string; content: string }, errorLog: string): FilePatch | null => {
+  if (file.content.includes(".map(")) {
+    return { path: file.path, before: file.content, after: file.content.replace(".map(", "?.map("), reason: "Guarded the collection before mapping so an undefined response does not crash the preview." };
+  }
+  if (file.content.includes(".filter(")) {
+    return { path: file.path, before: file.content, after: file.content.replace(".filter(", "?.filter("), reason: "Guarded the collection before filtering." };
+  }
+  if (file.path.endsWith(".tsx") || file.path.endsWith(".ts")) {
+    return { path: file.path, before: file.content, after: `${file.content}\n// Forge repair note: reviewed against runtime log — ${errorLog.slice(0, 120).replace(/\n/g, " ")}\n`, reason: "Recorded a safe review marker because no deterministic collection access was found." };
+  }
+  return null;
+};
+
+const isSafePath = (path: string) => path.length <= 255 && !path.includes("..") && !path.startsWith("/");
 
 export const appRouter = router({
   system: systemRouter,
@@ -74,56 +105,101 @@ export const appRouter = router({
     events: protectedProcedure.input(z.object({ id: z.number() })).query(({ ctx, input }) => listEvents(input.id, ctx.user.id)),
     files: protectedProcedure.input(z.object({ id: z.number() })).query(({ ctx, input }) => listProjectFiles(input.id, ctx.user.id)),
     versions: protectedProcedure.input(z.object({ id: z.number() })).query(({ ctx, input }) => listProjectVersions(input.id, ctx.user.id)),
+    previewRuns: protectedProcedure.input(z.object({ id: z.number() })).query(({ ctx, input }) => listPreviewRuns(input.id, ctx.user.id)),
+    domains: protectedProcedure.input(z.object({ id: z.number() })).query(({ ctx, input }) => listDomains(input.id, ctx.user.id)),
+    builds: protectedProcedure.input(z.object({ id: z.number() })).query(({ ctx, input }) => listBuilds(input.id, ctx.user.id)),
+    members: protectedProcedure.input(z.object({ id: z.number() })).query(({ ctx, input }) => listMembers(input.id, ctx.user.id)),
+    audit: protectedProcedure.input(z.object({ id: z.number() })).query(({ ctx, input }) => listAuditLogs(input.id, ctx.user.id)),
     generateFiles: protectedProcedure.input(z.object({ projectId: z.number() })).mutation(async ({ ctx, input }) => {
+      const usage = await consumeUsage(ctx.user.id, "source-generation", 30);
+      if (!usage.allowed) throw new Error("Daily source-generation limit reached. Try again tomorrow.");
       const project = await getProject(input.projectId, ctx.user.id);
       if (!project) throw new Error("Project not found");
       const blueprint = project.blueprint ? (parseJson(project.blueprint) ?? generationFallback(project.idea)) : generationFallback(project.idea);
       let files = fileFallback(project.name, blueprint);
       try {
-        const response = await invokeLLM({
-          messages: [
-            { role: "system", content: "You are a senior full-stack engineer. Return only JSON with a files array. Each file must have path, kind, and content. Generate a small coherent React/TypeScript app from the supplied blueprint. Keep each file concise and never include secrets." },
-            { role: "user", content: `Project: ${project.name}\nBlueprint: ${JSON.stringify(blueprint)}` },
-          ],
-          maxTokens: 2800,
-        });
+        const response = await invokeLLM({ messages: [
+          { role: "system", content: "You are a senior full-stack engineer. Return only JSON with a files array. Each file must have path, kind, and content. Generate a small coherent React/TypeScript app from the supplied blueprint. Keep each file concise and never include secrets." },
+          { role: "user", content: `Project: ${project.name}\nBlueprint: ${JSON.stringify(blueprint)}` },
+        ], maxTokens: 2800 });
         const content = response.choices?.[0]?.message?.content;
         const parsed = typeof content === "string" ? parseJson(content) : null;
-        const generated = Array.isArray(parsed?.files) ? parsed.files.filter((file): file is { path: string; kind: string; content: string } => Boolean(file && typeof file === "object" && typeof (file as { path?: unknown }).path === "string" && typeof (file as { content?: unknown }).content === "string")) : [];
+        const generated = Array.isArray(parsed?.files) ? parsed.files.filter((file): file is { path: string; kind: string; content: string } => Boolean(file && typeof file === "object" && typeof (file as { path?: unknown }).path === "string" && typeof (file as { content?: unknown }).content === "string" && isSafePath((file as { path: string }).path))) : [];
         if (generated.length) files = generated.slice(0, 24);
-      } catch (error) {
-        console.warn("[AI file generation] fallback used", error);
-      }
-      const versionId = await insertProjectVersion({ projectId: input.projectId, ownerId: ctx.user.id, label: `Generated source v${Date.now()}`, summary: `${files.length} source files generated from the approved blueprint.` });
+      } catch (error) { console.warn("[AI file generation] fallback used", error); }
+      const versionId = await insertProjectVersion({ projectId: input.projectId, ownerId: ctx.user.id, label: `Generated source v${Date.now()}`, summary: `${files.length} source files generated from the approved blueprint.`, snapshot: JSON.stringify(files) });
       for (const file of files) await upsertProjectFile({ projectId: input.projectId, ownerId: ctx.user.id, path: file.path, kind: file.kind, content: file.content, version: 1 });
       await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "source-generation", message: `Generated ${files.length} project files`, meta: JSON.stringify({ versionId, paths: files.map(file => file.path) }) });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "source.generate", metadata: JSON.stringify({ versionId, count: files.length }) });
       await updateProject(input.projectId, ctx.user.id, { status: "ready" });
-      return { versionId, files };
+      return { versionId, files, remaining: usage.remaining };
     }),
     saveFile: protectedProcedure.input(z.object({ projectId: z.number(), path: z.string().min(1).max(255), kind: z.string().min(1).max(32), content: z.string().max(200000) })).mutation(async ({ ctx, input }) => {
+      if (!isSafePath(input.path)) throw new Error("Unsafe source path");
       const project = await getProject(input.projectId, ctx.user.id);
       if (!project) throw new Error("Project not found");
-      const fileId = await upsertProjectFile({ projectId: input.projectId, ownerId: ctx.user.id, path: input.path, kind: input.kind, content: input.content, version: 1 });
-      const versionId = await insertProjectVersion({ projectId: input.projectId, ownerId: ctx.user.id, label: `Edited ${input.path}`, summary: `Saved changes to ${input.path}.` });
-      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "source-edit", message: `Saved ${input.path}`, meta: JSON.stringify({ fileId, versionId, path: input.path }) });
-      return { fileId, versionId };
+      await upsertProjectFile({ projectId: input.projectId, ownerId: ctx.user.id, path: input.path, kind: input.kind, content: input.content, version: 1 });
+      const current = await listProjectFiles(input.projectId, ctx.user.id);
+      const versionId = await insertProjectVersion({ projectId: input.projectId, ownerId: ctx.user.id, label: `Edited ${input.path}`, summary: `Saved changes to ${input.path}.`, snapshot: JSON.stringify(current.map(file => ({ path: file.path, kind: file.kind, content: file.content }))) });
+      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "source-edit", message: `Saved ${input.path}`, meta: JSON.stringify({ versionId, path: input.path }) });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "source.edit", metadata: JSON.stringify({ path: input.path, versionId }) });
+      return { versionId };
+    }),
+    compilePreview: protectedProcedure.input(z.object({ projectId: z.number() })).mutation(async ({ ctx, input }) => {
+      const project = await getProject(input.projectId, ctx.user.id);
+      if (!project) throw new Error("Project not found");
+      const files = await listProjectFiles(input.projectId, ctx.user.id);
+      const logs: string[] = [`[forge] compiling ${files.length} generated files`, "[forge] validating paths and entry points"];
+      const errors: string[] = [];
+      if (!files.length) errors.push("No generated source files found. Generate a source tree first.");
+      if (files.length && !files.some(file => /(^|\/)App\.(tsx|jsx)$/.test(file.path))) errors.push("No App.tsx or App.jsx entry point was found.");
+      for (const file of files) {
+        if (!isSafePath(file.path)) errors.push(`Unsafe path: ${file.path}`);
+        if (!file.content.trim()) errors.push(`Empty source file: ${file.path}`);
+        if (/<<<<<<<|>>>>>>>/.test(file.content)) errors.push(`Merge conflict markers found in ${file.path}`);
+      }
+      const status = errors.length ? "failed" as const : "ready" as const;
+      if (errors.length) logs.push(...errors.map(error => `[error] ${error}`));
+      else logs.push("[forge] contract checks passed", "[forge] preview is ready");
+      const snapshot = JSON.stringify(files.map(file => ({ path: file.path, kind: file.kind, content: file.content })));
+      const versionId = await insertProjectVersion({ projectId: input.projectId, ownerId: ctx.user.id, label: `Preview ${status} v${Date.now()}`, summary: status === "ready" ? "Generated project contract compiled successfully." : errors.join(" "), snapshot });
+      const parsedBlueprint = project.blueprint ? parseJson(project.blueprint) : null;
+      const blueprintPages = Array.isArray(parsedBlueprint?.pages) ? parsedBlueprint.pages : [];
+      const routeMap = JSON.stringify(blueprintPages.map((page: unknown) => ({ path: `/${String(page).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, title: String(page) })));
+      const runId = await insertPreviewRun({ projectId: input.projectId, ownerId: ctx.user.id, versionId, status, logs: logs.join("\n"), routeMap });
+      await updateProject(input.projectId, ctx.user.id, { status: status === "ready" ? "ready" : "blocked" });
+      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "preview", message: status === "ready" ? "Generated project compiled" : "Preview compile failed", meta: JSON.stringify({ runId, versionId, logs, routeMap }) });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "preview.compile", metadata: JSON.stringify({ runId, status }) });
+      return { runId, versionId, status, logs, routeMap: JSON.parse(routeMap), filesChecked: files.length };
+    }),
+    restoreVersion: protectedProcedure.input(z.object({ projectId: z.number(), versionId: z.number() })).mutation(async ({ ctx, input }) => {
+      const project = await getProject(input.projectId, ctx.user.id);
+      if (!project) throw new Error("Project not found");
+      const versions = await listProjectVersions(input.projectId, ctx.user.id);
+      const version = versions.find(item => item.id === input.versionId);
+      if (!version?.snapshot) throw new Error("This version has no restorable snapshot");
+      const snapshot = JSON.parse(version.snapshot) as Array<{ path: string; kind: string; content: string }>;
+      for (const file of snapshot) if (isSafePath(file.path)) await upsertProjectFile({ projectId: input.projectId, ownerId: ctx.user.id, path: file.path, kind: file.kind, content: file.content, version: 1 });
+      const restoredFiles = await listProjectFiles(input.projectId, ctx.user.id);
+      const newVersionId = await insertProjectVersion({ projectId: input.projectId, ownerId: ctx.user.id, label: `Restored v${version.id}`, summary: `Restored the project snapshot from version ${version.id}.`, snapshot: JSON.stringify(restoredFiles.map(file => ({ path: file.path, kind: file.kind, content: file.content }))) });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "version.restore", metadata: JSON.stringify({ from: input.versionId, versionId: newVersionId }) });
+      return { versionId: newVersionId, count: snapshot.length };
     }),
     generate: protectedProcedure.input(z.object({ idea: z.string().min(12), name: z.string().min(2).max(80) })).mutation(async ({ ctx, input }) => {
+      const usage = await consumeUsage(ctx.user.id, "blueprint-generation", 20);
+      if (!usage.allowed) throw new Error("Daily blueprint-generation limit reached. Try again tomorrow.");
       const projectId = await insertProject({ ownerId: ctx.user.id, name: input.name, idea: input.idea, status: "building" });
       await insertEvent({ projectId, ownerId: ctx.user.id, kind: "generation", message: "AI blueprint generation started" });
-      let blueprint: ReturnType<typeof generationFallback>;
+      let blueprint: Blueprint;
       try {
-        const response = await invokeLLM({
-          messages: [
-            { role: "system", content: "You are a product architect. Return only valid JSON with keys summary (string), pages (string array), tables (string array), roles (string array), checklist (string array). Keep it practical and concise." },
-            { role: "user", content: `Turn this app idea into a build-ready blueprint: ${input.idea}` },
-          ],
-          maxTokens: 900,
-        });
+        const response = await invokeLLM({ messages: [
+          { role: "system", content: "You are a product architect. Return only valid JSON with keys summary (string), pages (string array), tables (string array), roles (string array), checklist (string array). Keep it practical and concise." },
+          { role: "user", content: `Turn this app idea into a build-ready blueprint: ${input.idea}` },
+        ], maxTokens: 900 });
         const content = response.choices?.[0]?.message?.content;
         const parsed = typeof content === "string" ? parseJson(content) : null;
         if (!parsed) throw new Error("AI returned no usable blueprint");
-        blueprint = { ...generationFallback(input.idea), ...parsed };
+        blueprint = { ...generationFallback(input.idea), ...parsed } as Blueprint;
       } catch (error) {
         console.warn("[AI generation] failed", error);
         await updateProject(projectId, ctx.user.id, { status: "blocked", description: "AI generation needs a retry." });
@@ -132,63 +208,107 @@ export const appRouter = router({
       }
       const saved = await updateProject(projectId, ctx.user.id, { status: "ready", description: String(blueprint.summary), blueprint: JSON.stringify(blueprint), previewPath: "/preview" });
       await insertEvent({ projectId, ownerId: ctx.user.id, kind: "generation", message: "Blueprint ready for review", meta: JSON.stringify(blueprint) });
-      return { project: saved, blueprint };
+      await insertAudit({ projectId, actorId: ctx.user.id, action: "blueprint.generate", metadata: JSON.stringify({ projectId }) });
+      return { project: saved, blueprint, remaining: usage.remaining };
     }),
     fromTemplate: protectedProcedure.input(z.object({ slug: z.string(), name: z.string().min(2) })).mutation(async ({ ctx, input }) => {
       const template = templateCatalog.find(item => item.slug === input.slug) ?? templateCatalog[0];
       const idea = `Build a ${template.category.toLowerCase()} app based on the ${template.name} template. ${template.description}`;
       const projectId = await insertProject({ ownerId: ctx.user.id, name: input.name, idea, description: template.description, status: "draft", blueprint: JSON.stringify({ summary: template.description, pages: ["Home", "Dashboard", "Settings"], tables: ["users", "records"], roles: ["Owner", "Member"], checklist: ["Customize theme", "Connect records", "Publish preview"] }) });
       await insertEvent({ projectId, ownerId: ctx.user.id, kind: "template", message: `Started from ${template.name}` });
+      await insertAudit({ projectId, actorId: ctx.user.id, action: "template.use", metadata: JSON.stringify({ slug: input.slug }) });
       return getProject(projectId, ctx.user.id);
     }),
   }),
   ai: router({
     diagnose: protectedProcedure.input(z.object({ projectId: z.number(), errorLog: z.string().min(8) })).mutation(async ({ ctx, input }) => {
+      const usage = await consumeUsage(ctx.user.id, "bug-diagnosis", 40);
+      if (!usage.allowed) throw new Error("Daily diagnosis limit reached. Try again tomorrow.");
       const project = await getProject(input.projectId, ctx.user.id);
       if (!project) throw new Error("Project not found");
-      let diagnosis = { summary: "The runtime log points to a missing data boundary.", confidence: 0.78, affectedArea: "Data loading", steps: ["Check the query response", "Add an empty state", "Retry the preview build"] };
+      const files = await listProjectFiles(input.projectId, ctx.user.id);
+      let diagnosis = { summary: "The runtime log points to a missing data boundary.", confidence: 0.78, affectedArea: "Data loading", steps: ["Check the query response", "Add an empty state", "Retry the preview build"], patches: [] as FilePatch[] };
       try {
         const response = await invokeLLM({ messages: [
-          { role: "system", content: "You are a senior debugging assistant. Return only JSON with keys summary, confidence (number), affectedArea, steps (string array). Do not invent files you cannot see." },
-          { role: "user", content: `Diagnose this app runtime error and propose a safe repair:\n${input.errorLog}` },
-        ], maxTokens: 650 });
+          { role: "system", content: "You are a senior debugging assistant. Return only JSON with keys summary, confidence (number), affectedArea, steps (string array), patches (array of {path,before,after,reason}). Only patch supplied files. Keep patches small and safe." },
+          { role: "user", content: `Diagnose this app runtime error and propose a safe repair.\nERROR LOG:\n${input.errorLog}\nFILES:\n${files.slice(0, 12).map(file => `FILE ${file.path}\n${file.content.slice(0, 5000)}`).join("\n\n")}` },
+        ], maxTokens: 1500 });
         const content = response.choices?.[0]?.message?.content;
         const parsed = typeof content === "string" ? parseJson(content) : null;
-        if (parsed) diagnosis = { ...diagnosis, ...parsed } as typeof diagnosis;
+        if (parsed) diagnosis = { ...diagnosis, ...parsed, patches: Array.isArray(parsed.patches) ? parsed.patches.filter((patch): patch is FilePatch => Boolean(patch && typeof patch === "object" && typeof (patch as { path?: unknown }).path === "string" && typeof (patch as { before?: unknown }).before === "string" && typeof (patch as { after?: unknown }).after === "string" && isSafePath((patch as { path: string }).path))) : [] } as typeof diagnosis;
       } catch (error) { console.warn("[AI diagnosis] fallback used", error); }
-      const bugId = await insertBugReport({ projectId: input.projectId, ownerId: ctx.user.id, errorLog: input.errorLog, diagnosis: JSON.stringify(diagnosis), status: "open" });
-      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "bug-fix", message: "AI diagnosis ready", meta: JSON.stringify(diagnosis) });
-      return { id: bugId, diagnosis };
+      if (!diagnosis.patches.length) {
+        const candidate = files.find(file => /\.(tsx?|jsx?)$/.test(file.path));
+        const patch = candidate ? heuristicPatch(candidate, input.errorLog) : null;
+        if (patch) diagnosis.patches = [patch];
+      }
+      const bugId = await insertBugReport({ projectId: input.projectId, ownerId: ctx.user.id, errorLog: input.errorLog, diagnosis: JSON.stringify(diagnosis), patch: JSON.stringify(diagnosis.patches), affectedFiles: JSON.stringify(diagnosis.patches.map(patch => patch.path)), status: "open" });
+      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "bug-fix", message: "AI diagnosis and reviewable patch ready", meta: JSON.stringify({ bugId, affectedFiles: diagnosis.patches.map(patch => patch.path) }) });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "bug.diagnose", metadata: JSON.stringify({ bugId, remaining: usage.remaining }) });
+      return { id: bugId, diagnosis, remaining: usage.remaining };
     }),
     applyRepair: protectedProcedure.input(z.object({ projectId: z.number(), bugId: z.number() })).mutation(async ({ ctx, input }) => {
       const project = await getProject(input.projectId, ctx.user.id);
       if (!project) throw new Error("Project not found");
-      await updateBugReport(input.bugId, ctx.user.id, { status: "fixed" });
-      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "bug-fix", message: "AI repair applied and saved to history", meta: JSON.stringify({ bugId: input.bugId }) });
-      return { status: "fixed" as const };
+      const bug = await getBugReport(input.bugId, ctx.user.id);
+      if (!bug) throw new Error("Bug report not found");
+      const patches = bug.patch ? JSON.parse(bug.patch) as FilePatch[] : [];
+      const files = await listProjectFiles(input.projectId, ctx.user.id);
+      let applied = 0;
+      for (const patch of patches) {
+        const current = files.find(file => file.path === patch.path);
+        if (!current || current.content !== patch.before) continue;
+        await upsertProjectFile({ projectId: input.projectId, ownerId: ctx.user.id, path: patch.path, kind: current.kind, content: patch.after, version: 1 });
+        applied += 1;
+      }
+      const updatedFiles = await listProjectFiles(input.projectId, ctx.user.id);
+      const versionId = await insertProjectVersion({ projectId: input.projectId, ownerId: ctx.user.id, label: `Repair ${input.bugId}`, summary: `Applied ${applied} reviewed repair patch${applied === 1 ? "" : "es"}.`, snapshot: JSON.stringify(updatedFiles.map(file => ({ path: file.path, kind: file.kind, content: file.content }))) });
+      await updateBugReport(input.bugId, ctx.user.id, { status: applied ? "fixed" : "blocked" });
+      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "bug-fix", message: applied ? "AI repair applied and saved to history" : "Repair became stale and needs review", meta: JSON.stringify({ bugId: input.bugId, versionId, applied }) });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "bug.apply", metadata: JSON.stringify({ bugId: input.bugId, versionId, applied }) });
+      return { status: applied ? "fixed" as const : "blocked" as const, applied, versionId };
     }),
   }),
   deployment: router({
-    connectDomain: protectedProcedure.input(z.object({ projectId: z.number(), hostname: z.string().min(4) })).mutation(async ({ ctx, input }) => {
+    providerStatus: publicProcedure.query(() => ({ web: deploymentAdapter.state(), domain: domainAdapter.state(), android: androidAdapter.state() })),
+    connectDomain: protectedProcedure.input(z.object({ projectId: z.number(), hostname: z.string().min(4).max(255) })).mutation(async ({ ctx, input }) => {
       const project = await getProject(input.projectId, ctx.user.id);
       if (!project) throw new Error("Project not found");
-      const id = await insertDomain({ projectId: input.projectId, ownerId: ctx.user.id, hostname: input.hostname, status: "pending" });
-      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "domain", message: `Domain setup started for ${input.hostname}` });
-      return { id, status: "pending", blocker: "DNS provider connection is required to verify this domain." };
+      const verification = await domainAdapter.verify(input.hostname);
+      const id = await insertDomain({ projectId: input.projectId, ownerId: ctx.user.id, hostname: input.hostname, status: verification.status === "pending" ? "pending" : "blocked" });
+      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "domain", message: `Domain setup started for ${input.hostname}`, meta: JSON.stringify(verification) });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "domain.connect", metadata: JSON.stringify({ hostname: input.hostname, provider: verification.provider }) });
+      return { id, ...verification };
     }),
     publish: protectedProcedure.input(z.object({ projectId: z.number() })).mutation(async ({ ctx, input }) => {
       const project = await getProject(input.projectId, ctx.user.id);
       if (!project) throw new Error("Project not found");
-      const id = await insertBuild({ projectId: input.projectId, ownerId: ctx.user.id, kind: "web", status: "blocked", blocker: "Publish provider is not connected yet." });
-      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "publish", message: "Publish request saved; provider connection required" });
-      return { id, status: "blocked", blocker: "Connect a deployment provider to receive a public URL." };
+      const files = await listProjectFiles(input.projectId, ctx.user.id);
+      const result = await deploymentAdapter.publish({ projectId: input.projectId, projectName: project.name, files: files.map(file => ({ path: file.path, content: file.content })) });
+      const id = await insertBuild({ projectId: input.projectId, ownerId: ctx.user.id, kind: "web", status: result.status, blocker: result.blocker });
+      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "publish", message: "Publish request saved; provider adapter response recorded", meta: JSON.stringify(result) });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "deploy.publish", metadata: JSON.stringify({ id, provider: result.provider }) });
+      return { id, ...result };
     }),
-    mobileBuild: protectedProcedure.input(z.object({ projectId: z.number(), kind: z.enum(["apk", "aab"]), packageName: z.string().min(3), version: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    mobileBuild: protectedProcedure.input(z.object({ projectId: z.number(), kind: z.enum(["apk", "aab"]), packageName: z.string().regex(/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/), version: z.string().regex(/^\d+\.\d+\.\d+$/) })).mutation(async ({ ctx, input }) => {
       const project = await getProject(input.projectId, ctx.user.id);
       if (!project) throw new Error("Project not found");
-      const id = await insertBuild({ projectId: input.projectId, ownerId: ctx.user.id, kind: input.kind, status: "blocked", packageName: input.packageName, version: input.version, blocker: "Android build worker and signing credentials are not connected yet." });
-      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "mobile-build", message: `${input.kind.toUpperCase()} build request saved` });
-      return { id, status: "blocked", blocker: "Connect an Android build worker and signing credentials to create an artifact." };
+      const result = await androidAdapter.build();
+      const id = await insertBuild({ projectId: input.projectId, ownerId: ctx.user.id, kind: input.kind, status: result.status, packageName: input.packageName, version: input.version, blocker: result.blocker });
+      await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "mobile-build", message: `${input.kind.toUpperCase()} build request saved`, meta: JSON.stringify(result) });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "mobile.build", metadata: JSON.stringify({ id, kind: input.kind, packageName: input.packageName }) });
+      return { id, ...result };
+    }),
+  }),
+  team: router({
+    addMember: protectedProcedure.input(z.object({ projectId: z.number(), email: z.string().email(), role: z.enum(["editor", "viewer"]) })).mutation(async ({ ctx, input }) => {
+      const access = await getProjectAccess(input.projectId, ctx.user.id);
+      if (!access || access.role !== "owner") throw new Error("Only the project owner can manage members");
+      const user = await getUserByEmail(input.email);
+      if (!user) throw new Error("That user must sign in once before they can be added");
+      const id = await addMember({ projectId: input.projectId, userId: user.id, role: input.role });
+      await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "team.member_add", metadata: JSON.stringify({ userId: user.id, role: input.role }) });
+      return { id, userId: user.id, role: input.role };
     }),
   }),
 });

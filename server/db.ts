@@ -12,6 +12,10 @@ import {
   bugReports,
   projectFiles,
   projectVersions,
+  previewRuns,
+  projectMembers,
+  auditLogs,
+  usageCounters,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -66,6 +70,13 @@ export async function getUserByOpenId(openId: string): Promise<User | undefined>
   return result[0];
 }
 
+export async function getUserByEmail(email: string): Promise<User | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return result[0];
+}
+
 export async function listProjects(ownerId: number) {
   const db = await getDb();
   if (!db) return [];
@@ -77,6 +88,16 @@ export async function getProject(projectId: number, ownerId: number) {
   if (!db) return undefined;
   const result = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
   return result[0]?.ownerId === ownerId ? result[0] : undefined;
+}
+
+export async function getProjectAccess(projectId: number, userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const project = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project[0]) return undefined;
+  if (project[0].ownerId === userId) return { project: project[0], role: "owner" as const };
+  const member = await db.select().from(projectMembers).where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId))).limit(1);
+  return member[0] ? { project: project[0], role: member[0].role } : undefined;
 }
 
 export async function insertProject(input: typeof projects.$inferInsert) {
@@ -120,6 +141,14 @@ export async function insertDomain(input: typeof domains.$inferInsert) {
   return Number(result[0].insertId);
 }
 
+export async function listDomains(projectId: number, ownerId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const project = await getProject(projectId, ownerId);
+  if (!project) return [];
+  return db.select().from(domains).where(and(eq(domains.projectId, projectId), eq(domains.ownerId, ownerId))).orderBy(desc(domains.createdAt));
+}
+
 export async function insertBuild(input: typeof builds.$inferInsert) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
@@ -127,11 +156,26 @@ export async function insertBuild(input: typeof builds.$inferInsert) {
   return Number(result[0].insertId);
 }
 
+export async function listBuilds(projectId: number, ownerId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const project = await getProject(projectId, ownerId);
+  if (!project) return [];
+  return db.select().from(builds).where(and(eq(builds.projectId, projectId), eq(builds.ownerId, ownerId))).orderBy(desc(builds.createdAt));
+}
+
 export async function insertBugReport(input: typeof bugReports.$inferInsert) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   const result = await db.insert(bugReports).values(input);
   return Number(result[0].insertId);
+}
+
+export async function getBugReport(id: number, ownerId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(bugReports).where(and(eq(bugReports.id, id), eq(bugReports.ownerId, ownerId))).limit(1);
+  return result[0];
 }
 
 export async function updateBugReport(id: number, ownerId: number, values: Partial<typeof bugReports.$inferInsert>) {
@@ -173,4 +217,64 @@ export async function listProjectFiles(projectId: number, ownerId: number) {
   const project = await getProject(projectId, ownerId);
   if (!project) return [];
   return db.select().from(projectFiles).where(and(eq(projectFiles.projectId, projectId), eq(projectFiles.ownerId, ownerId))).orderBy(projectFiles.path);
+}
+
+export async function insertPreviewRun(input: typeof previewRuns.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const result = await db.insert(previewRuns).values(input);
+  return Number(result[0].insertId);
+}
+
+export async function listPreviewRuns(projectId: number, ownerId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const project = await getProject(projectId, ownerId);
+  if (!project) return [];
+  return db.select().from(previewRuns).where(and(eq(previewRuns.projectId, projectId), eq(previewRuns.ownerId, ownerId))).orderBy(desc(previewRuns.createdAt));
+}
+
+export async function listMembers(projectId: number, ownerId: number) {
+  const access = await getProjectAccess(projectId, ownerId);
+  if (!access) return [];
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(projectMembers).where(eq(projectMembers.projectId, projectId)).orderBy(desc(projectMembers.createdAt));
+}
+
+export async function addMember(input: typeof projectMembers.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const result = await db.insert(projectMembers).values(input);
+  return Number(result[0].insertId);
+}
+
+export async function insertAudit(input: typeof auditLogs.$inferInsert) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(auditLogs).values(input);
+}
+
+export async function listAuditLogs(projectId: number, ownerId: number) {
+  const access = await getProjectAccess(projectId, ownerId);
+  if (!access) return [];
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(auditLogs).where(eq(auditLogs.projectId, projectId)).orderBy(desc(auditLogs.createdAt));
+}
+
+export async function consumeUsage(userId: number, key: string, limit: number) {
+  const db = await getDb();
+  if (!db) return { allowed: true, remaining: limit };
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const existing = await db.select().from(usageCounters).where(and(eq(usageCounters.userId, userId), eq(usageCounters.key, key))).limit(1);
+  if (!existing[0] || existing[0].periodStart < start) {
+    if (existing[0]) await db.update(usageCounters).set({ count: 1, periodStart: start }).where(eq(usageCounters.id, existing[0].id));
+    else await db.insert(usageCounters).values({ userId, key, count: 1, periodStart: start });
+    return { allowed: true, remaining: Math.max(0, limit - 1) };
+  }
+  if (existing[0].count >= limit) return { allowed: false, remaining: 0 };
+  await db.update(usageCounters).set({ count: existing[0].count + 1 }).where(eq(usageCounters.id, existing[0].id));
+  return { allowed: true, remaining: Math.max(0, limit - existing[0].count - 1) };
 }
