@@ -275,7 +275,8 @@ export const appRouter = router({
       const project = await getProject(input.projectId, ctx.user.id);
       if (!project) throw new Error("Project not found");
       const verification = await domainAdapter.verify(input.hostname);
-      const id = await insertDomain({ projectId: input.projectId, ownerId: ctx.user.id, hostname: input.hostname, status: verification.status === "pending" ? "pending" : "blocked" });
+      const domainStatus = verification.status === "ready" ? "connected" : verification.status === "pending" ? "pending" : "blocked";
+      const id = await insertDomain({ projectId: input.projectId, ownerId: ctx.user.id, hostname: input.hostname, status: domainStatus });
       await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "domain", message: `Domain setup started for ${input.hostname}`, meta: JSON.stringify(verification) });
       await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "domain.connect", metadata: JSON.stringify({ hostname: input.hostname, provider: verification.provider }) });
       return { id, ...verification };
@@ -285,7 +286,8 @@ export const appRouter = router({
       if (!project) throw new Error("Project not found");
       const files = await listProjectFiles(input.projectId, ctx.user.id);
       const result = await deploymentAdapter.publish({ projectId: input.projectId, projectName: project.name, files: files.map(file => ({ path: file.path, content: file.content })) });
-      const id = await insertBuild({ projectId: input.projectId, ownerId: ctx.user.id, kind: "web", status: result.status, blocker: result.blocker });
+      const buildStatus = result.status === "ready" ? "ready" : result.status === "pending" ? "building" : "blocked";
+      const id = await insertBuild({ projectId: input.projectId, ownerId: ctx.user.id, kind: "web", status: buildStatus, artifactUrl: result.publicUrl, blocker: result.blocker });
       await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "publish", message: "Publish request saved; provider adapter response recorded", meta: JSON.stringify(result) });
       await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "deploy.publish", metadata: JSON.stringify({ id, provider: result.provider }) });
       return { id, ...result };
@@ -293,8 +295,10 @@ export const appRouter = router({
     mobileBuild: protectedProcedure.input(z.object({ projectId: z.number(), kind: z.enum(["apk", "aab"]), packageName: z.string().regex(/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/), version: z.string().regex(/^\d+\.\d+\.\d+$/) })).mutation(async ({ ctx, input }) => {
       const project = await getProject(input.projectId, ctx.user.id);
       if (!project) throw new Error("Project not found");
-      const result = await androidAdapter.build();
-      const id = await insertBuild({ projectId: input.projectId, ownerId: ctx.user.id, kind: input.kind, status: result.status, packageName: input.packageName, version: input.version, blocker: result.blocker });
+      const files = await listProjectFiles(input.projectId, ctx.user.id);
+      const result = await androidAdapter.build({ projectId: input.projectId, kind: input.kind, packageName: input.packageName, version: input.version, files: files.map(file => ({ path: file.path, content: file.content })) });
+      const buildStatus = result.status === "ready" ? "ready" : result.status === "pending" ? "building" : "blocked";
+      const id = await insertBuild({ projectId: input.projectId, ownerId: ctx.user.id, kind: input.kind, status: buildStatus, packageName: input.packageName, version: input.version, artifactUrl: result.artifactUrl, blocker: result.blocker });
       await insertEvent({ projectId: input.projectId, ownerId: ctx.user.id, kind: "mobile-build", message: `${input.kind.toUpperCase()} build request saved`, meta: JSON.stringify(result) });
       await insertAudit({ projectId: input.projectId, actorId: ctx.user.id, action: "mobile.build", metadata: JSON.stringify({ id, kind: input.kind, packageName: input.packageName }) });
       return { id, ...result };
