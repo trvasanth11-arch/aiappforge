@@ -221,6 +221,36 @@ export const appRouter = router({
     }),
   }),
   ai: router({
+    chat: protectedProcedure.input(z.object({
+      messages: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().min(1).max(6000) })).min(1).max(30),
+      projectName: z.string().max(80).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const usage = await consumeUsage(ctx.user.id, "builder-chat", 80);
+      if (!usage.allowed) throw new Error("Daily builder conversation limit reached. Try again tomorrow.");
+      const lastMessage = input.messages[input.messages.length - 1]?.content ?? "";
+      const explicitBuild = /\b(build|create|generate|make it|go ahead|ship it|start now|yes)\b|பண்ணு|செய்|உருவாக்கு/i.test(lastMessage);
+      const fallback = {
+        reply: explicitBuild ? "I have enough to start. I’m turning our conversation into a build brief and will open the generated workspace when the blueprint is ready." : "Good direction. Tell me who will use this app, the most important workflow, and whether it needs login or payments. I’ll use your answer to shape the first build.",
+        shouldBuild: explicitBuild,
+        projectName: input.projectName || "Untitled build",
+        buildBrief: input.messages.map(message => `${message.role}: ${message.content}`).join("\n"),
+      };
+      try {
+        const response = await invokeLLM({ messages: [
+          { role: "system", content: "You are Forge, a warm but decisive AI product builder. Have a short practical conversation with the user. Ask only the highest-value missing questions. When the user clearly asks to build, says yes/go ahead, or gives enough detail and an explicit build request, set shouldBuild=true. Return only JSON with reply (string), shouldBuild (boolean), projectName (string), and buildBrief (string). The buildBrief must be a complete implementation brief containing users, pages, core workflow, data tables, roles, integrations, and visual direction. Never claim that an app is already built until the build request is handed to the builder." },
+          ...input.messages.slice(-18).map(message => ({ role: message.role as "user" | "assistant", content: message.content })),
+        ], maxTokens: 1100 });
+        const content = response.choices?.[0]?.message?.content;
+        const parsed = typeof content === "string" ? parseJson(content) : null;
+        if (parsed && typeof parsed.reply === "string" && typeof parsed.buildBrief === "string") {
+          const shouldBuild = Boolean(parsed.shouldBuild) || explicitBuild;
+          await insertAudit({ actorId: ctx.user.id, action: shouldBuild ? "builder.build_intent" : "builder.chat", metadata: JSON.stringify({ remaining: usage.remaining }) });
+          return { reply: parsed.reply, shouldBuild, projectName: typeof parsed.projectName === "string" ? parsed.projectName : fallback.projectName, buildBrief: parsed.buildBrief, remaining: usage.remaining };
+        }
+      } catch (error) { console.warn("[Builder chat] fallback used", error); }
+      await insertAudit({ actorId: ctx.user.id, action: explicitBuild ? "builder.build_intent" : "builder.chat", metadata: JSON.stringify({ remaining: usage.remaining }) });
+      return { ...fallback, remaining: usage.remaining };
+    }),
     diagnose: protectedProcedure.input(z.object({ projectId: z.number(), errorLog: z.string().min(8) })).mutation(async ({ ctx, input }) => {
       const usage = await consumeUsage(ctx.user.id, "bug-diagnosis", 40);
       if (!usage.allowed) throw new Error("Daily diagnosis limit reached. Try again tomorrow.");

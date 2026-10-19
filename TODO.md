@@ -53,3 +53,4 @@
 - [x] Android builds validate package/version inputs, use an isolated build adapter boundary, and keep signing/build blockers explicit.
 - [ ] Connect an Android worker and protected signing credentials to produce downloadable APK/AAB artifacts.
 - [x] Project member roles (editor/viewer), owner-only membership changes, daily usage counters, audit logs, and protected generation/diagnosis limits are implemented.
+- [x] Dashboard product brief is a conversational AI builder: user messages, assistant follow-up questions, build-ready brief generation, and automatic blueprint handoff when the user says build/go ahead.
